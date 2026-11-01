@@ -75,7 +75,7 @@ button, input, select { font: inherit; color: inherit; }
 .dash .cd div { background: rgba(255,255,255,.16); border: 1px solid rgba(255,255,255,.22); border-radius: 12px; padding: 6px 2px; text-align: center; }
 .dash .cd b { display: block; font-size: 1.2rem; line-height: 1; font-weight: 700; }
 .dash .cd span { font-size: 0.66rem; opacity: .85; }
-.dash .msg { margin: 6px 0 0; font-size: 0.78rem; padding: 3px 10px; border-radius: 99px; background: rgba(0,0,0,.18); display: inline-block; }
+.dash .msg { margin: 6px 0 0; font-size: 0.78rem; padding: 3px 10px; border-radius: 99px; background: rgba(0,0,0,.18); display: inline-block; transition: opacity 0.3s ease; }
 .dash .stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; margin: 10px 0 0; }
 .dash .stat { background: rgba(255,255,255,.14); border: 1px solid rgba(255,255,255,.2); border-radius: 14px; padding: 6px 2px; text-align: center; }
 .dash .stat b { color: #fff; font-size: 1.05rem; display: block; font-weight: 700; }
@@ -385,6 +385,7 @@ let KEY = 'giftlist-v3';
 let undoStack = [];
 let collapsed = new Set();
 let wasComplete = false, initialized = false;
+let globalProgress = 0; // ট্র্যাকিং এর জন্য
 
 const SORTS = ['ডিফল্ট', 'নাম', 'সম্পন্নতা', 'সংখ্যা'];
 const SORT_ICONS = ['↕', '🔤', '✅', '🔢'];
@@ -400,9 +401,9 @@ if ('webkitSpeechRecognition' in window || 'SpeechRecognition' in window) {
   recognition.onresult = (event) => {
     const text = event.results[0][0].transcript;
     $('qaItem').value = text;
-    toast('🎤 ভয়েস রেকর্ড হয়েছে: ' + text);
+    toast('🎤 ভয়েস রেকর্ড হয়েছে: ' + text);
   };
-  recognition.onerror = () => toast('❌ ভয়েস শোনা যায়নি, আবার চেষ্টা করুন');
+  recognition.onerror = () => toast('❌ ভয়েস শোনা যায়নি, আবার চেষ্টা করুন');
 }
 
 function startVoiceAdd() {
@@ -410,7 +411,7 @@ function startVoiceAdd() {
     recognition.start();
     toast('🎤 বলুন... (যেমন: ২টি শার্ট)');
   } else {
-    toast('⚠️ আপনার ব্রাউজারে ভয়েস সাপোর্ট নেই');
+    toast('⚠️ আপনার ব্রাউজারে ভয়েস সাপোর্ট নেই');
   }
 }
 
@@ -511,16 +512,55 @@ function fp(gid, pid) { const g = fg(gid); return g ? g.people.find(p => p.id ==
 function fi(gid, pid, iid) { const p = fp(gid, pid); return p ? p.items.find(i => i.id === iid) : null; }
 function allItems() { let list = []; if (!S || !S.groups) return list; S.groups.forEach(g => g.people && g.people.forEach(p => p.items && (list = list.concat(p.items)))); return list; }
 
+/* ============ Dynamic Smart Message System ============ */
+function getSmartMessage(daysLeft, progress) {
+  if (daysLeft <= 0) return '🎉 আলহামদুলিল্লাহ! দেশে যাওয়ার দিন চলে এসেছে!';
+  if (progress === 100) return '🎉 অভিনন্দন! সব কেনাকাটা সম্পূর্ণ! এখন ব্যাগ গোছানোর পালা।';
+  
+  const hour = new Date().getHours();
+  let timeGreeting = '';
+  if (hour >= 5 && hour < 12) timeGreeting = '☀️ শুভ সকাল!';
+  else if (hour >= 12 && hour < 17) timeGreeting = '🌤️ শুভ অপরাহ্ন!';
+  else if (hour >= 17 && hour < 20) timeGreeting = '🌇 শুভ সন্ধ্যা!';
+  else timeGreeting = '🌙 শুভ রাত্রি!';
+
+  // দিন অনুযায়ী আর্জেন্সি
+  if (daysLeft <= 7) return '✈️ আর মাত্র কয়েক দিন বাকি! বাকি কাজগুলো দ্রুত সেরে ফেলুন।';
+  if (daysLeft <= 30) return '🧳 ব্যাগ গোছানো শুরু করুন! সময় খুব দ্রুত চলে যাচ্ছে।';
+
+  // কাজের অগ্রগতি অনুযায়ী মেসেজ
+  if (progress === 0) return `${timeGreeting} নতুন তালিকা তৈরি হয়েছে। আজই প্রথম উপহারটি কিনে শুরু করুন!`;
+  if (progress < 25) return `${timeGreeting} শুরুটা হয়েছে, তালিকাটি দেখে পরিকল্পনা সাজিয়ে নিন।`;
+  if (progress < 50) return `${timeGreeting} এক চতুর্থাংশ শেষ! ধীরে ধীরে এগিয়ে যাচ্ছেন।`;
+  if (progress < 75) return `${timeGreeting} অর্ধেকের বেশি শেষ! আপনি দারুণ করছেন।`;
+  if (progress < 100) return `${timeGreeting} শেষ ধাপে আছেন! বাকি কয়েকটি জিনিস শেষ করে ফেলুন।`;
+
+  // সাধারণ মেসেজ (সময় অনুযায়ী)
+  if (daysLeft > 60) {
+    if (hour >= 5 && hour < 12) return '☀️ শুভ সকাল! হাতে প্রচুর সময় আছে, আজই শুরু করুন।';
+    if (hour >= 12 && hour < 17) return '🌤️ ভালো কাটুক দুপুর! অল্প অল্প করে কেনাকাটা এগিয়ে নিন।';
+    if (hour >= 17 && hour < 20) return '🌇 শুভ সন্ধ্যা! আজকের মতো থামুন, কাল আবার শুরু করুন।';
+    return '🌙 শুভ রাত্রি! বিশ্রাম নিন, কাল আবার কেনাকাটার প্ল্যান করুন।';
+  }
+  
+  return '😊 হাতে সময় আছে, আস্তে আস্তে কেনাকাটা করুন।';
+}
+
 function tick() {
   const now = new Date(), ms = TARGET - now;
   if (ms <= 0) {
     $('hD').textContent = '🎉 আজ!'; ['d','h','m','s'].forEach(i => $(i).textContent = '০');
-    $('msg').textContent = '🎉 আলহামদুলিল্লাহ! দেশে যাওয়ার দিন চলে এসেছে!'; return;
+    $('msg').textContent = getSmartMessage(0, globalProgress); return;
   }
   const d = Math.floor(ms / 864e5), h = Math.floor((ms % 864e5) / 36e5), m = Math.floor((ms % 36e5) / 6e4), s = Math.floor((ms % 6e4) / 1e3);
   $('d').textContent = bn(d); $('hD').textContent = '⏳ ' + bn(d) + ' দিন';
   $('h').textContent = bn(h); $('m').textContent = bn(m); $('s').textContent = bn(s);
-  $('msg').textContent = d > 60 ? '😊 হাতে সময় আছে, আস্তে আস্তে কেনাকাটা করুন।' : d > 30 ? '🛍️ কেনাকাটা গুছিয়ে ফেলার পারফেক্ট সময়!' : d > 7 ? '🧳 ব্যাগ গোছানো শুরু করুন!' : '✈️ আর মাত্র কয়েক দিন বাকি!';
+  
+  const dynamicMsg = getSmartMessage(d, globalProgress);
+  if ($('msg').textContent !== dynamicMsg) {
+    $('msg').style.opacity = 0;
+    setTimeout(() => { $('msg').textContent = dynamicMsg; $('msg').style.opacity = 1; }, 200);
+  }
 }
 setInterval(tick, 1000); tick();
 
@@ -608,6 +648,8 @@ function updateStats() {
   const spent = sumP(its.filter(i => i.done)), est = sumP(its);
   $('sP').textContent = money(spent); $('hS').textContent = money(spent);
   const pc = tot ? Math.round((dn / tot) * 100) : 0;
+  globalProgress = pc; // Global variable আপডেট করা হলো
+  
   $('pb').style.width = pc + '%'; $('hP').textContent = bn(pc) + '%'; $('rp').textContent = bn(pc) + '%';
   $('rf').style.strokeDasharray = (pc * 1.131) + ' 113.1';
   let txt = 'মোট কেনাকাটা ' + bn(pc) + '% শেষ';
@@ -656,7 +698,6 @@ function celebrate() {
 
 /* ============ Smart Text Parser (AI) ============ */
 function parseSmartText(text) {
-  // "২টি শার্ট আশিকের জন্য" বা "2 shirt for Ashik"
   let q = 1, t = text, note = '';
   const match = text.match(/^(\d+|[০-৯]+)\s*(?:টি|টা)?\s*(.*?)(?:\s+(?:এর জন্য|জন্য|for)\s+(.*))?$/i);
   
@@ -749,7 +790,7 @@ document.getElementById('settingsModal').onclick = e => { if (e.target.id === 's
 function exportImage() {
   toast('📸 ছবি তৈরি হচ্ছে...');
   const originalTheme = document.documentElement.dataset.theme;
-  document.documentElement.dataset.theme = 'light'; // Force light mode for image
+  document.documentElement.dataset.theme = 'light';
   const target = document.getElementById('main');
   
   html2canvas(target, { scale: 2, backgroundColor: '#f0f4f8' }).then(canvas => {
