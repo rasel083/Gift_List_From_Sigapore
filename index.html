@@ -298,8 +298,6 @@ mark { background: rgba(245, 158, 11, 0.35); color: inherit; border-radius: 3px;
   body { padding-bottom: 0; }
 }
 </style>
-<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
-<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
 </head>
 <body>
 
@@ -358,7 +356,7 @@ mark { background: rgba(245, 158, 11, 0.35); color: inherit; border-radius: 3px;
       <input type="file" accept=".json,application/json" hidden onchange="importData(this)"></label>
     <button class="btn" onclick="exportCSV()" title="CSV">📊</button>
     <button class="btn" onclick="setBudget()" title="বাজেট">💰</button>
-    <button class="btn" onclick="syncSetup()" title="সিঙ্ক">☁️</button>
+    <button class="btn" onclick="manualSync()" title="ক্লাউড থেকে রিফ্রেশ করুন">🔄</button>
     <button class="btn" onclick="print()" title="প্রিন্ট">🖨️</button>
   </div></div></div>
 </div></header>
@@ -368,7 +366,7 @@ mark { background: rgba(245, 158, 11, 0.35); color: inherit; border-radius: 3px;
 
 <div class="wrap">
   <main id="main"></main>
-  <div class="sync" id="sync"></div>
+  <div class="sync" id="sync">☁️ ক্লাউডের সাথে কানেক্ট হচ্ছে...</div>
 </div>
 
 <div class="toast" id="toast">
@@ -399,6 +397,9 @@ mark { background: rgba(245, 158, 11, 0.35); color: inherit; border-radius: 3px;
 
 <script>
 /* ============ Constants & Helpers ============ */
+const JSONBIN_BIN_ID = "6ae6bed5ac6210605a62d4ff";
+const JSONBIN_MASTER_KEY = "$2a$10$S4zYh9QZKcUxjKhqV8QsaumPWnrblF8epsnyjuknlidAoUrKdJoe6";
+
 const TARGET = new Date(2027, 0, 16, 0, 0, 0);
 const bn = n => String(n).replace(/\d/g, d => '০১২৩৪৫৬৭৮৯'[d]);
 const en = s => String(s).replace(/[০-৯]/g, d => '০১২৩৪৫৬৭৮৯'.indexOf(d));
@@ -407,6 +408,7 @@ const uid = () => Math.random().toString(36).slice(2, 9);
 const $ = id => document.getElementById(id);
 const money = n => '৳' + bn(Math.round(n * 100) / 100);
 const sumP = items => items.reduce((a, i) => a + (+i.p || 0), 0);
+const setSync = t => { $('sync').textContent = t; };
 
 const WATCH = 'হাত ঘড়ি*2|ফেসওয়াশ';
 const SEED = [
@@ -439,18 +441,57 @@ let wasComplete = false, initialized = false;
 const SORTS = ['ডিফল্ট', 'নাম', 'সম্পন্নতা', 'সংখ্যা'];
 const SORT_ICONS = ['↕', '🔤', '✅', '🔢'];
 
-/* ============ Persistence ============ */
-function load() {
+/* ============ Persistence (JSONBin.io) ============ */
+async function load() {
+  setSync('☁️ ক্লাউড থেকে ডাটা লোড হচ্ছে…');
   try {
-    const j = localStorage.getItem(KEY) || localStorage.getItem('giftlist-v2') || localStorage.getItem('giftlist-v1');
-    if (j) return JSON.parse(j);
-  } catch (e) {}
+    const res = await fetch(`https://api.jsonbin.io/v3/b/${JSONBIN_BIN_ID}/latest`, {
+      method: 'GET',
+      headers: {
+        'X-Master-Key': JSONBIN_MASTER_KEY
+      }
+    });
+    const json = await res.json();
+    if (json.record && json.record.groups) {
+      setSync('✓ ক্লাউড থেকে লোড হয়েছে');
+      return json.record;
+    }
+  } catch (e) {
+    console.warn('JSONBin লোড ব্যর্থ:', e);
+    setSync('⚠️ অফলাইন মোড (লোকাল ডাটা ব্যবহৃত হচ্ছে)');
+  }
   return null;
 }
+
+let saveTimeout = null;
 function persist() {
   try { localStorage.setItem(KEY, JSON.stringify(S)); } catch (e) {}
-  schedulePush();
+  
+  clearTimeout(saveTimeout);
+  setSync('☁️ সেভ হচ্ছে…');
+  
+  saveTimeout = setTimeout(async () => {
+    try {
+      const res = await fetch(`https://api.jsonbin.io/v3/b/${JSONBIN_BIN_ID}`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Master-Key': JSONBIN_MASTER_KEY
+        },
+        body: JSON.stringify(S)
+      });
+      if (res.ok) {
+        setSync('✓ ক্লাউডে সেভ হয়েছে');
+      } else {
+        throw new Error('সেভ ব্যর্থ');
+      }
+    } catch (e) {
+      console.warn('JSONBin সেভ ব্যর্থ:', e);
+      setSync('⚠️ সেভ করা যায়নি! ইন্টারনেট চেক করুন');
+    }
+  }, 1500); 
 }
+
 function snap() {
   undoStack.push(JSON.stringify(S));
   if (undoStack.length > 20) undoStack.shift();
@@ -470,6 +511,44 @@ $('undo').onclick = () => {
   render(); persist();
   toast('↩ ফিরিয়ে আনা হয়েছে');
 };
+
+/* ============ Manual & Auto Sync ============ */
+async function manualSync() {
+  if (document.activeElement.tagName === 'INPUT' || document.activeElement.isContentEditable) {
+    toast('⚠️ আগে লেখা শেষ করুন, তারপর সিঙ্ক করুন');
+    return;
+  }
+  const remote = await load();
+  if (remote && JSON.stringify(remote) !== JSON.stringify(S)) {
+    snap();
+    S = remote;
+    render();
+    toast('☁️ ক্লাউড থেকে নতুন আপডেট নেওয়া হয়েছে');
+  } else {
+    toast('✓ সব ডাটা আগে থেকেই আপডেট আছে');
+  }
+}
+
+setInterval(async () => {
+  if (document.activeElement.tagName === 'INPUT' || document.activeElement.isContentEditable) return;
+  if (saveTimeout) return; 
+  
+  try {
+    const res = await fetch(`https://api.jsonbin.io/v3/b/${JSONBIN_BIN_ID}/latest`, {
+      method: 'GET',
+      headers: { 'X-Master-Key': JSONBIN_MASTER_KEY }
+    });
+    const json = await res.json();
+    if (json.record && json.record.groups) {
+      const remoteStr = JSON.stringify(json.record);
+      if (remoteStr !== JSON.stringify(S)) {
+        S = json.record;
+        render();
+        setSync('☁️ অন্য ডিভাইস থেকে আপডেট হয়েছে');
+      }
+    }
+  } catch(e) {}
+}, 30000); 
 
 /* ============ Lookups ============ */
 function fg(id) { return S.groups.find(g => g.id === id); }
@@ -909,81 +988,6 @@ $('qaSubmit').onclick = () => {
   commit('✅ যোগ হয়েছে');
 };
 
-/* ============ Cloud Sync (Firebase) ============ */
-const FIREBASE_CONFIG = { apiKey: "", authDomain: "", projectId: "", appId: "" };
-let db = null, syncRef = null, syncUnsub = null, pushT = null, pendingRemote = null, SYNC = '';
-try { SYNC = localStorage.getItem('giftlist-sync') || ''; } catch (e) {}
-const editing = () => { const a = document.activeElement; return !!(a && a.matches && a.matches('input,[contenteditable]')); };
-const fbReady = () => !!(window.firebase && FIREBASE_CONFIG.apiKey && FIREBASE_CONFIG.projectId);
-const setSync = t => { $('sync').textContent = t; };
-
-function initDb() {
-  if (db) return true; if (!fbReady()) return false;
-  try { firebase.initializeApp(FIREBASE_CONFIG); db = firebase.firestore(); return true; } catch (e) { return false; }
-}
-function applyRemote(str) {
-  if (str === JSON.stringify(S)) return;
-  try { const d = JSON.parse(str); if (!d.groups) return;
-    S = d; try { localStorage.setItem(KEY, str); } catch (e) {} render(); } catch (e) {}
-}
-function pushNow() {
-  if (!SYNC || !syncRef) return;
-  syncRef.set({ data: JSON.stringify(S), updatedAt: Date.now() })
-    .then(() => setSync('☁️ সিঙ্ক হয়েছে ✓'))
-    .catch(e => setSync('⚠️ সিঙ্ক সমস্যা: ' + (e.code || e.message)));
-}
-function schedulePush() {
-  if (!SYNC || !syncRef) return;
-  clearTimeout(pushT); setSync('☁️ সিঙ্ক হচ্ছে…');
-  pushT = setTimeout(() => { pushT = null; pushNow(); }, 800);
-}
-function startSync() {
-  if (!SYNC || !initDb()) return;
-  if (syncUnsub) syncUnsub();
-  syncRef = db.collection('lists').doc(SYNC);
-  syncUnsub = syncRef.onSnapshot(doc => {
-    if (doc.metadata.hasPendingWrites || pushT) return;
-    if (!doc.exists) { pushNow(); return; }
-    const str = doc.data().data;
-    if (editing()) { pendingRemote = str; return; }
-    applyRemote(str); setSync('☁️ সিঙ্ক চালু ✓');
-  }, err => setSync('⚠️ সিঙ্ক সমস্যা: ' + (err.code || err.message)));
-  setSync('☁️ সিঙ্ক চালু ✓');
-}
-function syncSetup() {
-  if (!fbReady()) {
-    alert('সিঙ্ক চালু করতে আগে ফাইলের ভেতরের FIREBASE_CONFIG-এ আপনার Firebase-এর তথ্য বসাতে হবে।');
-    return;
-  }
-  const c = prompt('সিঙ্ক কোড দিন (সব ডিভাইসে একই কোড; ফাঁকা রাখলে সিঙ্ক বন্ধ):',
-    SYNC || (uid() + uid() + uid()));
-  if (c === null) return;
-  const code = c.trim();
-  if (!code) {
-    SYNC = ''; try { localStorage.removeItem('giftlist-sync'); } catch (e) {}
-    if (syncUnsub) syncUnsub(); syncUnsub = null; syncRef = null;
-    setSync('সিঙ্ক বন্ধ'); return;
-  }
-  if (code.length < 8) { alert('কোড কমপক্ষে ৮ অক্ষরের দিন।'); return; }
-  SYNC = code; try { localStorage.setItem('giftlist-sync', SYNC); } catch (e) {}
-  initDb(); syncRef = db.collection('lists').doc(SYNC);
-  syncRef.get().then(doc => {
-    if (doc.exists && doc.data().data !== JSON.stringify(S)) {
-      if (confirm('এই কোডে ক্লাউডে আগের ডাটা আছে।\nOK = ক্লাউডের ডাটা এই ডিভাইসে নিন\nCancel = এই ডিভাইসের ডাটা ক্লাউডে পাঠান')) {
-        snap(); applyRemote(doc.data().data);
-      } else pushNow();
-    } else if (!doc.exists) pushNow();
-    startSync();
-  }).catch(e => setSync('⚠️ সিঙ্ক সমস্যা: ' + (e.code || e.message)));
-}
-document.addEventListener('focusout', () => {
-  setTimeout(() => {
-    if (pendingRemote === null || editing()) return;
-    const str = pendingRemote; pendingRemote = null;
-    if (!pushT) applyRemote(str);
-  }, 300);
-});
-
 /* ============ Fixed dashboard scroll behavior ============ */
 (function () {
   const tb = $('topbar'), sp = $('spacer');
@@ -1005,12 +1009,13 @@ document.addEventListener('focusout', () => {
   }, { passive: true });
 })();
 
-/* ============ App Load ============ */
-S = load() || seed();
-if (!S.budget && S.budget !== 0) delete S.budget;
-render();
-if (SYNC) startSync();
-else setSync('✓ সব ডাটা এই ব্রাউজারে সেভ আছে');
+/* ============ App Load Initialization ============ */
+(async () => {
+  const remote = await load();
+  S = remote || seed();
+  if (!S.budget && S.budget !== 0) delete S.budget;
+  render();
+})();
 </script>
 </body>
 </html>
